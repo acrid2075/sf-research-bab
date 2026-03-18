@@ -33,15 +33,15 @@ def _(marimo):
 @app.cell
 def _(marimo):
     signal_file = marimo.ui.text(
-        value="data/signal.parquet",
+        value="data/bab_signal.parquet",
         label="Signal file path:"
     )
     signal_col_name = marimo.ui.text(
-        value="signal",
+        value="bab",
         label="Signal column name:"
     )
     marimo.hstack([signal_file, signal_col_name])
-    return (signal_file, signal_col_name)
+    return signal_col_name, signal_file
 
 
 @app.cell
@@ -203,6 +203,11 @@ def _(pl, ports_long):
 
 
 @app.cell
+def _():
+    return
+
+
+@app.cell
 def _(cumul_returns, go, marimo, n_quantiles, pl):
     # Plot cumulative returns
     fig = go.Figure()
@@ -241,6 +246,11 @@ def _(cumul_returns, go, marimo, n_quantiles, pl):
     )
 
     marimo.ui.plotly(fig)
+    return
+
+
+@app.cell
+def _():
     return
 
 
