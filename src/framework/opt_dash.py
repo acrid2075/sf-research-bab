@@ -26,8 +26,8 @@ def _(marimo):
 
 @app.cell
 def _(marimo):
-    data_dir = marimo.ui.text(value="data/bab_weights", label="Weights directory:")
-    signal_file = marimo.ui.text(value="data/bab_signal.parquet", label="Signal file:")
+    data_dir = marimo.ui.text(value="data/weights", label="Weights directory:")
+    signal_file = marimo.ui.text(value="data/signal.parquet", label="Signal file:")
     marimo.hstack([data_dir, signal_file])
     return data_dir, signal_file
 
