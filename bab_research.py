@@ -15,6 +15,7 @@ from sf_quant.data.covariance_matrix import construct_factor_model_components
 from sf_quant.optimizer.optimizers import dynamic_mve_optimizer
 from sf_quant.optimizer.constraints import Constraint
 from sf_quant.schema.portfolio_schema import PortfolioSchema
+import matplotlib.pyplot as plt
 
 
 @ray.remote
@@ -267,17 +268,164 @@ def dynamic_backtest_parallel(
 if __name__ == "__main__":
     signal_df = pl.read_parquet('zero_data/bab_signal.parquet')
 
-    print("Starting zero_constraints")
-    zero_constraints = [sfo.ZeroBeta()]
-    zero_weights = dynamic_backtest_parallel(signal_df, zero_constraints)
-    zero_weights.write_parquet("weights/zero_beta.parquet")
+    # print("Starting zero_constraints")
+    # zero_constraints = [sfo.ZeroBeta()]
+    # zero_weights = dynamic_backtest_parallel(signal_df, zero_constraints)
+    # zero_weights.write_parquet("weights/zero_beta.parquet")
 
-    print("Starting unit_constraints")
-    unit_constraints = [sfo.UnitBeta()]
-    unit_weights = dynamic_backtest_parallel(signal_df, unit_constraints)
-    unit_weights.write_parquet("weights/unit_beta.parquet")
+    # print("Starting unit_constraints")
+    # unit_constraints = [sfo.UnitBeta()]
+    # unit_weights = dynamic_backtest_parallel(signal_df, unit_constraints)
+    # unit_weights.write_parquet("weights/unit_beta.parquet")
 
-    print("Starting full_constraints")
-    full_constraints = [sfo.UnitBeta(), sfo.LongOnly(), sfo.FullInvestment()]
-    full_weights = dynamic_backtest_parallel(signal_df, full_constraints)
-    full_weights.write_parquet("weights/full_beta.parquet")
+    # print("Starting full_constraints")
+    # full_constraints = [sfo.UnitBeta(), sfo.LongOnly(), sfo.FullInvestment()]
+    # full_weights = dynamic_backtest_parallel(signal_df, full_constraints)
+    # full_weights.write_parquet("weights/full_beta.parquet")
+
+    print("Getting portfolio weights and returns")
+    zero_weights = pl.read_parquet("weights/zero_beta.parquet")
+    zero_returns = sfp.generate_returns_from_weights(zero_weights)
+    zero_df = (
+    zero_weights.rename({"weight": "zero_weight", "gamma": "zero_gamma"})
+        .with_columns(
+            pl.col("zero_weight")
+            #.truediv(pl.col("active_risk").mean().over("date")).mul(0.05)
+            )
+        )
+    
+    unit_weights = pl.read_parquet("weights/unit_beta.parquet")
+    unit_returns = sfp.generate_returns_from_weights(unit_weights)
+    unit_df = (unit_weights.rename({"weight": "unit_weight", "gamma": "unit_gamma"})
+                    # .with_columns(pl.col("unit_weight").truediv(pl.col("active_risk").mean().over("date")).mul(.05))
+                    )
+
+
+    full_weights = pl.read_parquet("weights/full_beta.parquet")
+    full_returns = sfp.generate_returns_from_weights(full_weights)
+    full_df = (full_weights.rename({"weight": "full_weight", "gamma": "full_gamma"})
+                    #.with_columns(pl.col("full_weight").truediv(pl.col("active_risk").mean()).mul(.05))
+                    )
+    
+    _min = zero_df.select("date").min().item()
+    _max = zero_df.select("date").max().item()
+    bmk_weights = sfd.load_benchmark(_min, _max).rename({"weight": "bmk_weight"})
+
+    print("Joining weights")
+    weights_df = (
+        signal_df.join(bmk_weights, on=["date", "barrid"])
+        .join(zero_df.select([pl.col("date"), pl.col("barrid"), pl.col("zero_weight")]), on=["date", "barrid"])
+        .join(unit_df.select([pl.col("date"), pl.col("barrid"), pl.col("unit_weight")]), on=["date", "barrid"])
+        .join(full_df.select([pl.col("date"), pl.col("barrid"), pl.col("full_weight")]), on=["date", "barrid"])
+        )
+    
+    print(weights_df.head())
+    
+    
+    bmk_returns = sfd.load_benchmark_returns(_min, _max).with_columns(pl.col("bmk_return").truediv(100))
+    print("Joining returns")
+    returns = (
+        bmk_returns.join(zero_returns.rename({"return": "zero_return"}), on="date")
+        .join(unit_returns.rename({"return": "unit_return"}), on="date")
+        .join(full_returns.rename({"return": "full_return"}), on="date")
+    )
+
+    print(returns.head())
+
+    print("Performing regressions")
+    cov_xy = pl.cov("unit_return", "bmk_return")
+    var_x = pl.col("bmk_return").var()
+
+    beta_expr = cov_xy / var_x
+
+    errors = (
+        returns.with_columns(beta=beta_expr)
+        .with_columns(e=pl.col("unit_return") - (pl.col("bmk_return") * pl.col("beta")))
+    )
+
+    print(errors.head(5))
+
+    # Correlation of residuals with zero-beta returns
+    print(errors.select(pl.corr("e", "zero_return")))
+
+
+
+    cov_xy = pl.cov("full_return", "bmk_return")
+    var_x = pl.col("bmk_return").var()
+
+    beta_expr = cov_xy / var_x
+
+    errors = (
+        returns.with_columns(beta=beta_expr)
+        .with_columns(e=pl.col("full_return") - (pl.col("bmk_return") * pl.col("beta")))
+    )
+
+    print(errors.head(5))
+
+    # Correlation of residuals with zero-beta returns
+    print(errors.select(pl.corr("e", "zero_return")))
+
+
+    cum_returns = errors.with_columns([
+        (pl.col("bmk_return") + 1).cum_prod().alias("cum_bmk"),
+        (pl.col("zero_return") + 1).cum_prod().alias("cum_zero"),
+        (pl.col("unit_return") + 1).cum_prod().alias("cum_unit"),
+        (pl.col("full_return") + 1).cum_prod().alias("cum_full")
+    ])
+
+    
+    dates = cum_returns["date"].to_list()
+
+    # plt.clf()
+    # plt.plot(dates, cum_returns["cum_bmk"].to_list(), label='Benchmark')
+    # plt.plot(dates, cum_returns["cum_zero"].to_list(), label='Zero Beta')
+    # plt.plot(dates, cum_returns["cum_unit"].to_list(), label='Unit Beta')
+    # plt.plot(dates, cum_returns["cum_full"].to_list(), label='Full Constraints')
+    # plt.yscale('log')
+    # plt.xlabel('Date')
+    # plt.ylabel('Cumulative Return (Log Scale)')
+    # plt.legend()
+    # plt.title("Constrained BAB")
+    # plt.tight_layout()
+    # plt.savefig('constrained_beta.png')
+    # plt.clf()
+
+    # plt.clf()
+    # plt.plot(dates, cum_returns["cum_zero"].to_list(), label='Zero Beta')
+    # plt.yscale('log')
+    # plt.xlabel('Date')
+    # plt.ylabel('Cumulative Return (Log Scale)')
+    # plt.legend()
+    # plt.title("Zero Beta BAB")
+    # plt.tight_layout()
+    # plt.savefig('zero_beta.png')
+    # plt.clf()
+
+
+
+
+
+    last_df = (weights_df
+               .with_columns(pl.col("full_weight")
+                             .sub(pl.col("bmk_weight"))
+                             .alias("effective_active_weight")
+                             )
+                .with_columns(
+                    pl.corr("zero_weight", "effective_active_weight")
+                    .over("date")
+                    .alias("transfer_coeff")
+                )
+    )
+    
+    plt.clf()
+    plt.plot(last_df["date"].to_list(), last_df["transfer_coeff"].to_list())
+    plt.title("Transfer Coefficient, BAB")
+    plt.xlabel("Date")
+    plt.ylabel("TC")
+    plt.show()
+    plt.clf()
+
+                             
+
+
+                
